@@ -9,7 +9,7 @@ from numpy import ndarray as np_ndarray
 
 from scipy.interpolate import RegularGridInterpolator  # type: ignore
 from glob import glob
-from typing import List, Any, Callable, Dict
+from typing import List, Any, Callable
 
 from yaml import Loader as yaml_Loader
 from yaml import load as yaml_load
