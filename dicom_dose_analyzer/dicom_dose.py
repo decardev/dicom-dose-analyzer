@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import pydicom
 from pydicom.filereader import dcmread
 from pydicom.uid import UID, ExplicitVRBigEndian
@@ -8,7 +9,10 @@ from numpy import ndarray as np_ndarray
 
 from scipy.interpolate import RegularGridInterpolator  # type: ignore
 from glob import glob
-from typing import List, Any, Callable
+from typing import List, Any, Callable, Dict
+
+from yaml import Loader as yaml_Loader
+from yaml import load as yaml_load
 
 from string import Template
 import datetime
@@ -209,8 +213,21 @@ def get_omniPro_file(config: Config) -> None:
         f.write(header + "\n".join(content) + footer)
 
 
+def create_omniPro(file: str) -> None:
+
+    try:
+        config = yaml_load(open(file, "r"), Loader=yaml_Loader)
+        print(config)
+    except ValueError as error:
+        logger.error(error)
+        return None
+
+    get_omniPro_file(Config(**config))
+
+
 if __name__ == "__main__":
 
-    config = Config.parse_file("./data/config.json")
+    create_omniPro("./data/config.yaml")
+    # config = Config.parse_file("./data/config.json")
 
-    get_omniPro_file(config)
+    # get_omniPro_file(config)
