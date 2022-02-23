@@ -11,9 +11,6 @@ from scipy.interpolate import RegularGridInterpolator  # type: ignore
 from glob import glob
 from typing import List, Any, Callable
 
-from yaml import Loader as yaml_Loader
-from yaml import load as yaml_load
-
 from string import Template
 import datetime
 
@@ -213,7 +210,10 @@ def get_omniPro_file(config: Config) -> None:
         f.write(header + "\n".join(content) + footer)
 
 
-def create_omniPro(file: str) -> None:
+def create_omniPro_from_yaml(file: str) -> None:
+
+    from yaml import Loader as yaml_Loader
+    from yaml import load as yaml_load
 
     try:
         config = yaml_load(open(file, "r"), Loader=yaml_Loader)
@@ -225,9 +225,18 @@ def create_omniPro(file: str) -> None:
     get_omniPro_file(Config(**config))
 
 
-if __name__ == "__main__":
+def create_omniPro_from_jason(file: str) -> None:
 
-    create_omniPro("./data/config.yaml")
-    # config = Config.parse_file("./data/config.json")
+    try:
+        config = Config.parse_file("./data/config.json")
+    except ValueError as error:
+        logger.error(error)
+        return None
 
-    # get_omniPro_file(config)
+    get_omniPro_file(config)
+
+
+# if __name__ == "__main__":
+
+#     create_omniPro_from_jason("./data/config.json")
+#     create_omniPro_from_yaml("./data/config.yaml")
