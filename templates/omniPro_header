@@ -1,0 +1,2 @@
+:MSR 	$measurements	 # No. of measurement in file
+:SYS BDS 0 # Beam Data Scanner System

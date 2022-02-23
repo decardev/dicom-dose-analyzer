@@ -1,0 +1,32 @@
+#
+# RFA300 ASCII Measurement Dump ( BDS format )
+#
+# Measurement number $number
+#
+%VNR 1.0
+%MOD  RAT
+%TYP  SCN 
+%SCN  DPT 
+%FLD  ION 
+%DAT  $date 
+%TIM  $time
+%FSZ  $size $size
+%BMT  PHO $energy
+%SSD  $ssd
+%BUP  0
+%BRD  $ssd
+%FSH  -1
+%ASC  0
+%WEG  0
+%GPO  0
+%CPO  0
+%MEA  1
+%PRD  0
+%PTS  $points
+%STS  $start # Start Scan values in mm ( X , Y , Z )
+%EDS  $stop # End Scan values in mm ( X , Y , Z )
+#
+#	  X      Y      Z     Dose
+#
+$measures
+:EOM  # End of Measurement

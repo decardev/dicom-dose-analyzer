@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "dicom-dose-analyzer"
+version = "0.1.0"
+description = ""
+authors = ["Diego Carrasco <22986819+decardev@users.noreply.github.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.11"
+pydicom = "^2.2.2"
+numpy = "^1.22.2"
+scipy = "^1.8.0"
+pydantic = "^1.9.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^5.2"
+black = "^22.1.0"
+ipython = "^8.0.1"
+matplotlib = "^3.5.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
