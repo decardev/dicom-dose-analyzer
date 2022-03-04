@@ -5,20 +5,49 @@ from pydicom.uid import UID, ExplicitVRBigEndian
 from pathlib import Path
 from pydantic import BaseModel
 
+from yaml import Loader as yaml_Loader
+from yaml import load as yaml_load
+from json import load as json_load
+
 from numpy import ndarray as np_ndarray
 
 from scipy.interpolate import RegularGridInterpolator  # type: ignore
 from glob import glob
-from typing import List, Any, Callable
+from typing import List, Any, Callable, Union
 
 from string import Template
 import datetime
 
-# from matplotlib import pyplot as plt
-
 RT_PLAN_UID = "1.2.840.10008.5.1.4.1.1.481.5"
 TEMPLATE_MEASURE = "./templates/omniPro_measure"
 TEMPLATE_HEADER = "./templates/omniPro_header"
+
+
+def get_beam_number(dose: pydicom.FileDataset) -> int:
+    if "ReferencedFractionGroupSequence" in dose.ReferencedRTPlanSequence[0]:
+        beam = (
+            dose.ReferencedRTPlanSequence[0]
+            .ReferencedFractionGroupSequence[0]
+            .ReferencedBeamSequence[0]
+            .ReferencedBeamNumber
+        )
+    else:
+        beam = 1
+    return beam
+
+
+def get_field_size(beam_sequence: Any) -> float:
+
+    if "ApplicatorSequence" in beam_sequence:
+        ap_id = beam_sequence.ApplicatorSequence[0].ApplicatorID
+        size = float(ap_id.split(" ")[0])
+
+    else:
+        control_sequence = beam_sequence.ControlPointSequence[0]
+        jaw = control_sequence.BeamLimitingDevicePositionSequence[0].LeafJawPositions
+        size = float(jaw[1]) - float(jaw[0])
+
+    return size
 
 
 class Point(BaseModel):
@@ -56,12 +85,7 @@ class DicomData:
 
         # Idealy this dicom dose should have only one beam sequence. We are only
         # trying to get the first reference
-        beam = (
-            dose.ReferencedRTPlanSequence[0]
-            .ReferencedFractionGroupSequence[0]
-            .ReferencedBeamSequence[0]
-            .ReferencedBeamNumber
-        )
+        beam = get_beam_number(dose)
 
         # File parent folder
         file_folder = str(Path(filepath).parent.absolute())
@@ -95,8 +119,8 @@ class DicomData:
         self.iso = Point(x=iso[0], y=iso[1], z=iso[2])
 
         # Cooridnates of surface entry in patient based system in x, y, z
-        entry = sequence.SurfaceEntryPoint
-        self.entry = Point(x=entry[0], y=entry[1], z=entry[2])
+        surface = sequence.SurfaceEntryPoint
+        self.surface = Point(x=surface[0], y=surface[1], z=surface[2])
 
         # Image position related to patient in dicom format. Format is [x (col), y (row), z (frame)]
         # https://stackoverflow.com/questions/40115444/dicom-understanding-the-relationship-between-patient-position-0018-5100-image
@@ -129,10 +153,9 @@ class DicomData:
         self.energy = sequence.NominalBeamEnergy
 
         self.ssd = sequence.SourceToSurfaceDistance
-        jaw = sequence.BeamLimitingDevicePositionSequence[0].LeafJawPositions
-        self.jaw = [float(j) for j in jaw]
+        self.field_size = get_field_size(plan.BeamSequence[beam - 1])
 
-    def get_dose(self, line: Line) -> List[Point]:
+    def get_dose(self, line: Line, ref: str = "iso") -> List[Point]:
 
         # Creation of grid system for start and stop values
         dx = line.stop.x - line.start.x
@@ -153,10 +176,17 @@ class DicomData:
 
         # This vector is in patient reference and should be passed as matrix..
         # We need to massage the axis to work. Dont think... its right.
-        dcm_vec = [
-            [self.iso.z + y, self.iso.y + z, self.iso.x + x]
-            for (x, y, z) in zip(x_vec, y_vec, z_vec)
-        ]
+
+        if ref == "surface":
+            dcm_vec = [
+                [self.surface.z + y, self.surface.y + z, self.surface.x + x]
+                for (x, y, z) in zip(x_vec, y_vec, z_vec)
+            ]
+        else:
+            dcm_vec = [
+                [self.iso.z + y, self.iso.y + z, self.iso.x + x]
+                for (x, y, z) in zip(x_vec, y_vec, z_vec)
+            ]
 
         d_vec = [float(d) for d in self.interpolator(dcm_vec).flatten()]
 
@@ -182,7 +212,7 @@ def get_omniPro_string(dcm: DicomData, line: Line, ind: int) -> str:
         number=ind,
         date=dcm.date,
         time=dcm.time,
-        size=int(dcm.jaw[1] - dcm.jaw[0]),
+        size=int(dcm.field_size),
         energy=dcm.energy,
         ssd=dcm.ssd,
         points=len(dose),
@@ -194,7 +224,33 @@ def get_omniPro_string(dcm: DicomData, line: Line, ind: int) -> str:
     return output
 
 
-def get_omniPro_file(config: Config) -> None:
+def create_config(file: str) -> Union[Config, None]:
+
+    file_suffix = Path(file).suffix
+
+    try:
+        if file_suffix == ".yaml":
+            config = yaml_load(open(file, "r"), Loader=yaml_Loader)
+        elif file_suffix == ".json":
+            config = json_load(open(file, "r"))
+        else:
+            logger.error(f"Cannot find type {file_suffix} in parser")
+            return None
+
+    except ValueError as error:
+        logger.error(error)
+        return None
+
+    return Config(**config)
+
+
+def create_omniPro_file(file: str) -> None:
+
+    config = create_config(file)
+
+    if not config:
+        logger.error(f"Could not initialize configuration for file: {file}")
+        return None
 
     dcm = DicomData(config.input)
 
@@ -210,33 +266,7 @@ def get_omniPro_file(config: Config) -> None:
         f.write(header + "\n".join(content) + footer)
 
 
-def create_omniPro_from_yaml(file: str) -> None:
-
-    from yaml import Loader as yaml_Loader
-    from yaml import load as yaml_load
-
-    try:
-        config = yaml_load(open(file, "r"), Loader=yaml_Loader)
-        print(config)
-    except ValueError as error:
-        logger.error(error)
-        return None
-
-    get_omniPro_file(Config(**config))
-
-
-def create_omniPro_from_jason(file: str) -> None:
-
-    try:
-        config = Config.parse_file("./data/config.json")
-    except ValueError as error:
-        logger.error(error)
-        return None
-
-    get_omniPro_file(config)
-
-
 # if __name__ == "__main__":
 
-#     create_omniPro_from_jason("./data/config.json")
-#     create_omniPro_from_yaml("./data/config.yaml")
+#     # create_omniPro_from_json("./data/config.json")
+#     create_omniPro_file("./data/config.yaml")
