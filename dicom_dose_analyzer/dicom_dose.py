@@ -19,28 +19,36 @@ from string import Template
 import datetime
 
 RT_PLAN_UID = "1.2.840.10008.5.1.4.1.1.481.5"
-TEMPLATE_MEASURE = "./templates/omniPro_measure"
-TEMPLATE_HEADER = "./templates/omniPro_header"
+TEMPLATE_MEASURE = "./dicom_dose_analyzer/templates/omniPro_measure"
+TEMPLATE_HEADER = "./dicom_dose_analyzer/templates/omniPro_header"
 
 
-def get_beam_number(dose: pydicom.FileDataset) -> int:
+def get_beam_number(dose: pydicom.FileDataset, plan: pydicom.FileDataset) -> int:
     if "ReferencedFractionGroupSequence" in dose.ReferencedRTPlanSequence[0]:
-        beam = (
+        beam_number = (
             dose.ReferencedRTPlanSequence[0]
             .ReferencedFractionGroupSequence[0]
             .ReferencedBeamSequence[0]
             .ReferencedBeamNumber
         )
     else:
-        beam = 1
-    return beam
+        beam_number = 1
+
+    for ind, seq in enumerate(plan.FractionGroupSequence[0].ReferencedBeamSequence):
+        if seq.ReferencedBeamNumber == beam_number:
+            beam_number = ind + 1
+
+    return beam_number
 
 
 def get_field_size(beam_sequence: Any) -> float:
 
     if "ApplicatorSequence" in beam_sequence:
         ap_id = beam_sequence.ApplicatorSequence[0].ApplicatorID
-        size = float(ap_id.split(" ")[0])
+        if "X" in ap_id:
+            size = 10 * float(ap_id.split("X")[0])
+        else:
+            size = 10 * float(ap_id.split(" ")[0])
 
     else:
         control_sequence = beam_sequence.ControlPointSequence[0]
@@ -58,15 +66,17 @@ class Point(BaseModel):
 
 
 class Line(BaseModel):
+    name: str = ""
+    ref: str = "surface"
     start: Point = Point(x=-10, y=0, z=0)
     stop: Point = Point(x=10, y=0, z=0)
     delta: float = 0.1
 
 
 class Config(BaseModel):
-    input: str
-    output: str
+    files: List[str]
     ops: List[Line]
+    folder: Union[str, None]
 
 
 class DicomData:
@@ -82,10 +92,6 @@ class DicomData:
         # The Dicom Dose file should have a referenced SOP Instance of plan data
         refUID = dose.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID
         # print(refUID)
-
-        # Idealy this dicom dose should have only one beam sequence. We are only
-        # trying to get the first reference
-        beam = get_beam_number(dose)
 
         # File parent folder
         file_folder = str(Path(filepath).parent.absolute())
@@ -104,8 +110,15 @@ class DicomData:
         # The Only Dicom Plan File related to this Dicom Dose file
         plans = [pl for pl in plan_set if pl.SOPInstanceUID == refUID]
 
+        if not plans:
+            print("Missing dicom plan file")
+            return None
+
         plan = plans[0]
-        # print(plan.PatientID)
+
+        # Idealy this dicom dose should have only one beam sequence. We are only
+        # trying to get the first reference
+        beam = get_beam_number(dose, plan)
 
         # Control Point Sequence of plan
         sequence = plan.BeamSequence[beam - 1].ControlPointSequence[0]
@@ -155,7 +168,7 @@ class DicomData:
         self.ssd = sequence.SourceToSurfaceDistance
         self.field_size = get_field_size(plan.BeamSequence[beam - 1])
 
-    def get_dose(self, line: Line, ref: str = "iso") -> List[Point]:
+    def get_dose(self, line: Line) -> List[Point]:
 
         # Creation of grid system for start and stop values
         dx = line.stop.x - line.start.x
@@ -174,24 +187,28 @@ class DicomData:
         y_vec = [line.start.y + st * dy for st in s_vec]
         z_vec = [line.start.z + st * dz for st in s_vec]
 
-        # This vector is in patient reference and should be passed as matrix..
-        # We need to massage the axis to work. Dont think... its right.
-
-        if ref == "surface":
-            dcm_vec = [
-                [self.surface.z + y, self.surface.y + z, self.surface.x + x]
-                for (x, y, z) in zip(x_vec, y_vec, z_vec)
-            ]
+        # Depending on reference of line dose where to setup initial position
+        if line.ref == "surface":
+            ref = self.surface
+        elif line.ref == "isocenter":
+            ref = self.iso
         else:
-            dcm_vec = [
-                [self.iso.z + y, self.iso.y + z, self.iso.x + x]
-                for (x, y, z) in zip(x_vec, y_vec, z_vec)
-            ]
+            ref = self.surface
+
+        # This vector is in patient reference and should be passed as matrix..
+        # That means -> (dcm_z + vec_y, dcm_y + vec_z, dcm_x + vec_x)
+
+        # We need to massage the axis to work. Dont think... its right.
+        dcm_vec = [
+            [ref.z + y, ref.y + z, ref.x + x] for (x, y, z) in zip(x_vec, y_vec, z_vec)
+        ]
 
         d_vec = [float(d) for d in self.interpolator(dcm_vec).flatten()]
 
+        # The other problem its on the reference system of IBA. By default uses
+        # 0 degree system so we need to invert x and y. x -> -y, y -> x
         return [
-            Point(x=x, y=y, z=z, d=d)
+            Point(x=-y, y=x, z=z, d=d)
             for (x, y, z, d) in zip(x_vec, y_vec, z_vec, d_vec)
         ]
 
@@ -252,18 +269,24 @@ def create_omniPro_file(file: str) -> None:
         logger.error(f"Could not initialize configuration for file: {file}")
         return None
 
-    dcm = DicomData(config.input)
+    for dcm_file in config.files:
+        dcm = DicomData(dcm_file)
 
-    tmp = Template(open(TEMPLATE_HEADER, "r").read())
-    header = tmp.substitute(measurements=len(config.ops))
-    footer = f"\n:EOF # End of File\n"
+        tmp = Template(open(TEMPLATE_HEADER, "r").read())
+        header = tmp.substitute(measurements=len(config.ops))
+        footer = f"\n:EOF # End of File\n"
 
-    content: List[str] = []
-    for ind, op in enumerate(config.ops):
-        content.append(get_omniPro_string(dcm, op, ind + 1))
+        content: List[str] = []
+        for ind, op in enumerate(config.ops):
+            content.append(get_omniPro_string(dcm, op, ind + 1))
 
-    with open(config.output, "w+") as f:
-        f.write(header + "\n".join(content) + footer)
+        if config.folder:
+            output = Path(config.folder) / Path(dcm_file).with_suffix(".asc").name
+        else:
+            output = Path(dcm_file).with_suffix(".asc")
+
+        with open(output, "w+") as f:
+            f.write(header + "\n".join(content) + footer)
 
 
 # if __name__ == "__main__":
